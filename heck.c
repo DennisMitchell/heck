@@ -272,59 +272,107 @@ void he_pcode_to_mcode(he_t *he)
 
 	for(size_t pcpos = 0; pcpos < he->pcpos; )
 	{
-		word_t factor, jmpdist, jzpos;
+		word_t jmpdist, jzpos;
 
 		switch(he->pcode[pcpos++])
 		{
 			case op_add:
-				emit(he, "\x80\x06", 2);
-				emit(he, &he->pcode[pcpos++], 1);
+			{
+				cell_t add = he->pcode[pcpos++];
+
+				if(add == 1)
+				{
+					emit(he, "\xfe\x06", 2);
+				}
+				else if(add == 255)
+				{
+					emit(he, "\xfe\x0e", 2);
+				}
+				else
+				{
+					emit(he, "\x80\x06", 2);
+					emit(he, &add, 1);
+				}
+
 				break;
+			}
 
 			case op_add_ofst:
-				emit(he, "\x80\x86", 2);
+			{
 				cell_t add = he->pcode[pcpos++];
-				emit(he, &he->pcode[pcpos++], 4);
+				word_t offset = he->pcode[pcpos++];
+
+				if((int8_t) offset == offset)
+				{
+					emit(he, "\x80\x46", 2);
+					emit(he, &offset, 1);
+				}
+				else
+				{
+					emit(he, "\x80\x86", 2);
+					emit(he, &offset, 4);
+				}
+
 				emit(he, &add, 1);
 				break;
+			}
 
 			case op_cmpz:
 				emit(he, "\x80\x3e\x00", 3);
 				break;
 
 			case op_fma:
-				factor = he->pcode[pcpos++] & 255;
+			{
+				cell_t factor = he->pcode[pcpos++];
+				word_t offset = he->pcode[pcpos++];
+				bool small = (int8_t) offset == offset;
 
 				if(factor == 1)
 				{
-					emit(he, "\x00\x96", 2);
+					emit(he, small ? "\x00\x56" : "\x00\x96", 2);
 				}
 				else if(factor == 255)
 				{
-					emit(he, "\x28\x96", 2);
+					emit(he, small ? "\x28\x56" : "\x28\x96", 2);
 				}
 				else
 				{
 					emit(he, "\xb0", 1);
 					emit(he, &factor, 1);
-					emit(he, "\xf6\xe2\x00\x86", 4);
+					emit(he, small ? "\xf6\xe2\x00\x46" : "\xf6\xe2\x00\x86", 4);
 				}
 
-				emit(he, &he->pcode[pcpos++], 4);
+				emit(he, &offset, small ? 1 : 4);
 				break;
+			}
 
 			case op_getc:
-				emit(he, "\x48\x31\xc0\x48\xc7\xc2\x01\x00\x00\x00\x48\x31\xff\x0f\x05", 15);
+				emit(he, "\x48\x31\xc0\xb2\x01\x48\x31\xff\x0f\x05", 10);
 				break;
 
 			case op_jnz:
+			{
 				jzpos = he->mjmps[--he->mjpos];
 				jmpdist = he->mcpos - jzpos;
+				bool small = jmpdist - 4 < 128;
+
+				jmpdist -= small ? 4 : 0;
 				memcpy(&he->mcode[jzpos + 2], &jmpdist, 4);
 				jmpdist=-jmpdist;
-				emit(he, "\x0f\x85", 2);
-				emit(he, &jmpdist, 4);
+
+				if(small)
+				{
+					emit(he, "\x75", 1);
+					emit(he, &jmpdist, 1);
+				}
+				else
+				{
+					emit(he, "\x0f\x85", 2);
+					emit(he, &jmpdist, 4);
+				}
+
 				break;
+			}
 
 			case op_jz:
 				he->mjmps[he->mjpos++] = he->mcpos;
@@ -335,13 +383,26 @@ void he_pcode_to_mcode(he_t *he)
 				break;
 
 			case op_putc:
-				emit(he, "\x48\xc7\xc0\x01\x00\x00\x00\x48\x89\xc2\x48\x89\xc7\x0f\x05", 15);
+				emit(he, "\xb2\x01\x48\x89\xd0\x48\x89\xd7\x0f\x05", 10);
 				break;
 
 			case op_seek:
-				emit(he, "\x48\x81\xc6", 3);
-				emit(he, &he->pcode[pcpos++], 4);
-				break;
+				{
+					word_t offset = he->pcode[pcpos++];
+
+					if((int8_t) offset == offset)
+					{
+						emit(he, "\x48\x83\xc6", 3);
+						emit(he, &offset, 1);
+					}
+					else
+					{
+						emit(he, "\x48\x81\xc6", 3);
+						emit(he, &offset, 4);
+					}
+
+					break;
+				}
 
 			case op_setm:
 				emit(he, "\x0f\xb6\x16", 3);
