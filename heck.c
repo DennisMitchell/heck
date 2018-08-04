@@ -13,7 +13,7 @@
 typedef uint8_t cell_t;
 typedef int64_t word_t;
 
-static const int word_size = sizeof(word_t);
+static const size_t word_size = sizeof(word_t);
 
 #define	op_add      0x20444441
 #define op_add_ofst 0x4f444441
@@ -58,10 +58,6 @@ const cell_t neginv[] =
 	  0, 239,   0, 197,   0, 163,   0,  57,   0, 183,   0, 205,   0, 171,   0,   1
 };
 
-#define TAPE_SIZE (1L << 30)
-
-cell_t tape[TAPE_SIZE] __attribute__ ((aligned (PAGE_SIZE)));
-
 void error(char *message)
 {
 	if(message)
@@ -72,10 +68,17 @@ void error(char *message)
 	exit(1);
 }
 
-void sigsegv(int signal)
+void bounds(int signal)
 {
 	if(signal == SIGSEGV)
 		error("Memory pointer out of bounds.");
+}
+
+void *mmap_alloc(size_t size)
+{
+	static const int prot = PROT_READ | PROT_WRITE;
+	static const int flags = MAP_ANONYMOUS | MAP_NORESERVE | MAP_PRIVATE;
+	return mmap(NULL, size, prot, flags, -1, 0);
 }
 
 void he_flush(he_t *he, bool set_flags)
@@ -265,7 +268,7 @@ void he_pcode_to_mcode(he_t *he)
 {
 	he->mjmps = realloc(he->mjmps, he->pcpos * word_size);
 	size_t mcsize_max = he->pcpos * word_size * 2 + 16;
-	he->mcode = mmap(NULL, mcsize_max, PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+	he->mcode = mmap_alloc(mcsize_max);
 
 	if(he->mjmps == NULL || he->mcode == MAP_FAILED)
 		error(NULL);
@@ -422,18 +425,25 @@ void he_pcode_to_mcode(he_t *he)
 
 void he_run(he_t *he)
 {
-	size_t leftbuf = -(he->seekmin & PAGE_MASK);
-	size_t rightbuf = -(-he->seekmax & PAGE_MASK);
+	size_t lguard = -(he->seekmin & PAGE_MASK), rguard = -(-he->seekmax & PAGE_MASK);
+	size_t tape_size = 0;
+	cell_t *tape = MAP_FAILED;
 
-	if(mprotect(tape, leftbuf, PROT_NONE) == -1)
+	while (tape == MAP_FAILED)
+	{
+		tape_size = (tape_size - 1) / 2 + 1;
+		tape = mmap_alloc(tape_size);
+	}
+
+	if(mprotect(tape, lguard, PROT_NONE) == -1)
 		error(NULL);
 
-	if(mprotect(&tape[TAPE_SIZE - rightbuf], rightbuf, PROT_NONE) == -1)
+	if(mprotect(&tape[tape_size - rguard], rguard, PROT_NONE) == -1)
 		error(NULL);
 
-	signal(SIGSEGV, sigsegv);
+	signal(SIGSEGV, bounds);
 
-	size_t head = (leftbuf + TAPE_SIZE - rightbuf) / 2;
+	size_t head = (lguard + tape_size - rguard) / 2;;
 	asm volatile("mov %0, %%rsi" : : "r" (tape + head));
 	asm volatile("call *%0" : : "r" (he->mcode));
 }
